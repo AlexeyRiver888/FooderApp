@@ -42,8 +42,9 @@ button {
 
 .topbar,
 .session-status,
-.invite-row,
-.actions {
+.actions,
+.panel-head,
+.venue-row {
   display: flex;
   align-items: center;
 }
@@ -56,7 +57,8 @@ button {
 
 .eyebrow,
 .hint,
-.venue-copy p {
+.venue-copy p,
+.venue-row span {
   margin: 0;
   color: var(--muted);
   font-size: 13px;
@@ -73,69 +75,47 @@ h1 {
 }
 
 h2 {
-  font-size: 34px;
-  line-height: 1.05;
+  margin-top: 4px;
+  font-size: 28px;
+  line-height: 1.1;
 }
 
-.date-pill,
-.login-panel,
-.session-panel,
-.scoreboard,
+.panel,
 .winner {
   border: 1px solid var(--line);
   background: var(--panel);
   border-radius: 8px;
-}
-
-.date-pill {
-  padding: 9px 12px;
-  color: var(--muted);
-  white-space: nowrap;
-}
-
-.login-panel,
-.session-panel,
-.scoreboard,
-.winner {
   padding: 14px;
   margin-bottom: 16px;
 }
 
-.login-panel label {
-  display: block;
-  margin-bottom: 8px;
-  color: var(--muted);
+.primary-button,
+.ghost-button,
+.venue-row button {
+  min-height: 44px;
+  border-radius: 8px;
+  font-weight: 700;
 }
 
-.invite-row {
-  gap: 8px;
-}
-
-input {
+.primary-button {
   width: 100%;
-  min-width: 0;
-  height: 44px;
-  padding: 0 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #0d0f11;
-  color: var(--text);
-}
-
-.invite-row button,
-#activateButton {
-  height: 44px;
+  margin-top: 14px;
   padding: 0 14px;
-  border-radius: 8px;
   background: var(--text);
   color: #111315;
-  font-weight: 700;
-  white-space: nowrap;
+}
+
+.ghost-button,
+.venue-row button {
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
 }
 
 .hint {
   margin-top: 10px;
-  line-height: 1.4;
+  line-height: 1.45;
 }
 
 .session-status {
@@ -147,6 +127,29 @@ input {
   display: block;
   margin-top: 2px;
   font-size: 28px;
+}
+
+.status-dot {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 7px 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.people-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.people-list span {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 7px 10px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
 }
 
 .deck {
@@ -186,20 +189,6 @@ input {
   left: 18px;
   right: 18px;
   bottom: 18px;
-}
-
-.tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 12px;
-}
-
-.tags span {
-  border: 1px solid rgba(255, 255, 255, 0.26);
-  border-radius: 999px;
-  padding: 6px 10px;
-  background: rgba(0, 0, 0, 0.24);
 }
 
 .vote-badge {
@@ -261,26 +250,94 @@ input {
   color: var(--veto);
 }
 
-.score-row {
+.winner {
   display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 8px;
-  padding: 10px 0;
-  border-bottom: 1px solid var(--line);
+  grid-template-columns: 96px 1fr;
+  gap: 12px;
+  align-items: center;
+  border-color: rgba(53, 201, 121, 0.48);
+  background: rgba(53, 201, 121, 0.12);
 }
 
-.score-row:last-child {
-  border-bottom: 0;
+.winner img {
+  width: 96px;
+  height: 72px;
+  border-radius: 8px;
+  object-fit: cover;
 }
 
-.score-meta {
+.winner strong {
+  display: block;
+  font-size: 22px;
+}
+
+.winner span {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+}
+
+.panel-head {
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.venue-form {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+label {
+  display: grid;
+  gap: 6px;
   color: var(--muted);
   font-size: 13px;
 }
 
-.winner {
-  border-color: rgba(53, 201, 121, 0.48);
-  background: rgba(53, 201, 121, 0.12);
+input {
+  width: 100%;
+  min-width: 0;
+  height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0d0f11;
+  color: var(--text);
+}
+
+.venue-list {
+  display: grid;
+  gap: 10px;
+}
+
+.venue-row {
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.venue-row img {
+  width: 54px;
+  height: 44px;
+  border-radius: 6px;
+  object-fit: cover;
+}
+
+.venue-row div {
+  min-width: 0;
+  flex: 1;
+}
+
+.venue-row strong,
+.venue-row span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .hidden {
@@ -298,11 +355,15 @@ input {
   }
 
   h2 {
-    font-size: 28px;
+    font-size: 24px;
   }
 
   .icon-action {
     width: 56px;
     height: 56px;
+  }
+
+  .venue-row {
+    grid-template-columns: 1fr;
   }
 }

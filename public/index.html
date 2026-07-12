@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <title>Daily Venue Vote</title>
+    <title>Fooder</title>
     <link rel="stylesheet" href="/styles.css" />
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
@@ -11,29 +11,30 @@
     <main class="app-shell">
       <header class="topbar">
         <div>
-          <p class="eyebrow">Daily session</p>
+          <p class="eyebrow">Fooder</p>
           <h1>Куда идем?</h1>
         </div>
-        <div class="date-pill" id="datePill">--</div>
+        <button class="ghost-button hidden" id="adminToggle">Админ</button>
       </header>
 
-      <section class="login-panel" id="loginPanel">
-        <label for="inviteInput">Инвайт</label>
-        <div class="invite-row">
-          <input id="inviteInput" autocomplete="one-time-code" placeholder="Введите код" value="demo" />
-          <button id="loginButton">Войти</button>
-        </div>
-        <p class="hint">В Telegram авторизация берется из аккаунта автоматически. В браузере работает demo-режим.</p>
+      <section class="panel" id="statusPanel">
+        <p class="eyebrow" id="datePill">--</p>
+        <h2 id="stageTitle">Загрузка...</h2>
+        <p class="hint" id="stageHint">Открываем сегодняшнюю сессию.</p>
+        <button class="primary-button hidden" id="joinButton">Погнали</button>
+        <button class="primary-button hidden" id="startVoteButton">Голосовать</button>
+        <button class="primary-button hidden" id="revealButton">Узнать куда идем?</button>
       </section>
 
-      <section class="session-panel hidden" id="sessionPanel">
+      <section class="panel hidden" id="peoplePanel">
         <div class="session-status">
           <div>
-            <p class="eyebrow">Сегодня участвуют</p>
-            <strong id="activeCount">0</strong>
+            <p class="eyebrow">Идут на обед</p>
+            <strong id="activeCount">0 чел.</strong>
           </div>
-          <button id="activateButton">Активировать день</button>
+          <span class="status-dot" id="sessionStatus">сбор</span>
         </div>
+        <div class="people-list" id="peopleList"></div>
       </section>
 
       <section class="winner hidden" id="winnerPanel"></section>
@@ -46,9 +47,8 @@
           <div class="vote-badge no">Нет</div>
           <div class="vote-badge veto">Ветто</div>
           <div class="venue-copy">
-            <p id="venueArea"></p>
+            <p id="venueAddress"></p>
             <h2 id="venueName"></h2>
-            <div id="venueTags" class="tags"></div>
           </div>
         </article>
       </section>
@@ -59,7 +59,32 @@
         <button class="icon-action yes" id="yesButton" aria-label="Да">→</button>
       </section>
 
-      <section class="scoreboard hidden" id="scoreboard"></section>
+      <section class="panel admin-panel hidden" id="adminPanel">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Админка</p>
+            <h2>Заведения</h2>
+          </div>
+          <button class="ghost-button" id="resetFormButton">Новое</button>
+        </div>
+        <form class="venue-form" id="venueForm">
+          <input id="venueIdInput" type="hidden" />
+          <label>
+            Название
+            <input id="venueNameInput" required placeholder="Например, Бюро" />
+          </label>
+          <label>
+            Адрес
+            <input id="venueAddressInput" required placeholder="Улица, дом" />
+          </label>
+          <label>
+            URL картинки
+            <input id="venueImageInput" required placeholder="https://..." />
+          </label>
+          <button class="primary-button" id="saveVenueButton" type="submit">Сохранить</button>
+        </form>
+        <div class="venue-list" id="venueList"></div>
+      </section>
     </main>
 
     <script src="/app.js" type="module"></script>

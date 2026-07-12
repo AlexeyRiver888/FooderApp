@@ -3,9 +3,13 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  allParticipantsVoted,
   cloneDefaultDb,
   getOrCreateSession,
+  isAdminUser,
+  normalizeVenue,
   publicUser,
+  scoreSession,
   sessionPayload,
   validateTelegramInitData
 } from "./lib/app-core.js";
@@ -33,6 +37,7 @@ await loadEnv();
 
 const PORT = Number(process.env.PORT || 3000);
 const DATABASE_URL = process.env.DATABASE_URL || "";
+const BOT_TOKEN = process.env.BOT_TOKEN || "";
 const DATA_DIR = path.join(__dirname, "data");
 const PUBLIC_DIR = path.join(__dirname, "public");
 const DB_FILE = path.join(DATA_DIR, "db.json");
@@ -82,6 +87,33 @@ function sendJson(res, status, payload) {
 
 function sendError(res, status, message) {
   sendJson(res, status, { error: message });
+}
+
+async function sendBotMessage(chatId, text) {
+  if (!BOT_TOKEN) return;
+  try {
+    const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        disable_web_page_preview: true
+      })
+    });
+    if (!response.ok) {
+      console.error("Telegram sendMessage failed", response.status, await response.text());
+    }
+  } catch (error) {
+    console.error("Telegram sendMessage error", error);
+  }
+}
+
+async function notifyLunchResult(users, winner) {
+  const text = winner
+    ? `Готово, идем сюда:\n${winner.name}\n${winner.address || winner.area}`
+    : "Готово, но победитель не определился: ничья или все варианты заблокированы ветто.";
+  await Promise.all(users.map(user => sendBotMessage(user.id, text)));
 }
 
 async function ensureFileDb() {
@@ -152,6 +184,7 @@ async function createPostgresStore() {
         id text primary key,
         name text not null,
         area text not null default '',
+        address text not null default '',
         tags text[] not null default '{}',
         image text not null default '',
         sort_order integer not null default 0
@@ -159,7 +192,11 @@ async function createPostgresStore() {
 
       create table if not exists sessions (
         date text primary key,
+        status text not null default 'joining',
         created_at timestamptz not null default now()
+        ,
+        revealed_at timestamptz,
+        result_notified_at timestamptz
       );
 
       create table if not exists session_active_users (
@@ -177,6 +214,11 @@ async function createPostgresStore() {
         voted_at timestamptz not null default now(),
         primary key (session_date, venue_id, user_id)
       );
+
+      alter table venues add column if not exists address text not null default '';
+      alter table sessions add column if not exists status text not null default 'joining';
+      alter table sessions add column if not exists revealed_at timestamptz;
+      alter table sessions add column if not exists result_notified_at timestamptz;
     `);
 
     const seed = cloneDefaultDb();
@@ -191,10 +233,10 @@ async function createPostgresStore() {
 
     for (const [index, venue] of seed.venues.entries()) {
       await pool.query(
-        `insert into venues (id, name, area, tags, image, sort_order)
-         values ($1, $2, $3, $4, $5, $6)
+        `insert into venues (id, name, area, address, tags, image, sort_order)
+         values ($1, $2, $3, $4, $5, $6, $7)
          on conflict (id) do nothing`,
-        [venue.id, venue.name, venue.area, venue.tags, venue.image, index]
+        [venue.id, venue.name, venue.area || venue.address || "", venue.address || venue.area || "", venue.tags || [], venue.image, index]
       );
     }
   }
@@ -202,8 +244,12 @@ async function createPostgresStore() {
   async function readDb(client = pool) {
     const invitesResult = await client.query("select code, label, active, max_uses from invites order by code");
     const usersResult = await client.query("select id, first_name, last_name, username from users");
-    const venuesResult = await client.query("select id, name, area, tags, image from venues order by sort_order, name");
-    const sessionsResult = await client.query("select date, created_at from sessions");
+    const venuesResult = await client.query(
+      "select id, name, coalesce(nullif(address, ''), area) as address, image from venues order by sort_order, name"
+    );
+    const sessionsResult = await client.query(
+      "select date, status, created_at, revealed_at, result_notified_at from sessions"
+    );
     const activeResult = await client.query("select session_date, user_id from session_active_users");
     const votesResult = await client.query("select session_date, venue_id, user_id, value, voted_at from votes");
     const usesResult = await client.query("select invite_code, user_id from invite_uses");
@@ -226,8 +272,9 @@ async function createPostgresStore() {
       venues: venuesResult.rows.map(row => ({
         id: row.id,
         name: row.name,
-        area: row.area,
-        tags: row.tags || [],
+        address: row.address,
+        area: row.address,
+        tags: [],
         image: row.image
       })),
       sessions: {}
@@ -245,18 +292,24 @@ async function createPostgresStore() {
     for (const row of sessionsResult.rows) {
       db.sessions[row.date] = {
         date: row.date,
+        status: row.status,
         activeUsers: [],
         votes: {},
-        createdAt: row.created_at?.toISOString?.() || row.created_at
+        createdAt: row.created_at?.toISOString?.() || row.created_at,
+        revealedAt: row.revealed_at?.toISOString?.() || row.revealed_at || null,
+        resultNotifiedAt: row.result_notified_at?.toISOString?.() || row.result_notified_at || null
       };
     }
 
     for (const row of activeResult.rows) {
       db.sessions[row.session_date] ||= {
         date: row.session_date,
+        status: "joining",
         activeUsers: [],
         votes: {},
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
+        revealedAt: null,
+        resultNotifiedAt: null
       };
       db.sessions[row.session_date].activeUsers.push(row.user_id);
     }
@@ -264,9 +317,12 @@ async function createPostgresStore() {
     for (const row of votesResult.rows) {
       db.sessions[row.session_date] ||= {
         date: row.session_date,
+        status: "joining",
         activeUsers: [],
         votes: {},
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
+        revealedAt: null,
+        resultNotifiedAt: null
       };
       db.sessions[row.session_date].votes[row.venue_id] ||= {};
       db.sessions[row.session_date].votes[row.venue_id][row.user_id] = {
@@ -314,24 +370,48 @@ async function createPostgresStore() {
 
     for (const [index, venue] of db.venues.entries()) {
       await client.query(
-        `insert into venues (id, name, area, tags, image, sort_order)
-         values ($1, $2, $3, $4, $5, $6)
+        `insert into venues (id, name, area, address, tags, image, sort_order)
+         values ($1, $2, $3, $4, $5, $6, $7)
          on conflict (id) do update set
            name = excluded.name,
            area = excluded.area,
+           address = excluded.address,
            tags = excluded.tags,
            image = excluded.image,
            sort_order = excluded.sort_order`,
-        [venue.id, venue.name, venue.area, venue.tags || [], venue.image, index]
+        [
+          venue.id,
+          venue.name,
+          venue.address || venue.area || "",
+          venue.address || venue.area || "",
+          [],
+          venue.image,
+          index
+        ]
       );
+    }
+
+    if (db.venues.length) {
+      await client.query("delete from venues where id <> all($1::text[])", [db.venues.map(venue => venue.id)]);
+    } else {
+      await client.query("delete from venues");
     }
 
     for (const session of Object.values(db.sessions)) {
       await client.query(
-        `insert into sessions (date, created_at)
-         values ($1, coalesce($2::timestamptz, now()))
-         on conflict (date) do nothing`,
-        [session.date, session.createdAt || null]
+        `insert into sessions (date, status, created_at, revealed_at, result_notified_at)
+         values ($1, $2, coalesce($3::timestamptz, now()), $4::timestamptz, $5::timestamptz)
+         on conflict (date) do update set
+           status = excluded.status,
+           revealed_at = excluded.revealed_at,
+           result_notified_at = excluded.result_notified_at`,
+        [
+          session.date,
+          session.status || "joining",
+          session.createdAt || null,
+          session.revealedAt || null,
+          session.resultNotifiedAt || null
+        ]
       );
 
       for (const userId of session.activeUsers || []) {
@@ -392,6 +472,16 @@ async function requireAuth(req, res) {
   return publicUser(telegramUser);
 }
 
+async function requireAdmin(req, res) {
+  const user = await requireAuth(req, res);
+  if (!user) return null;
+  if (!isAdminUser(user.id)) {
+    sendError(res, 403, "Admin access is required");
+    return null;
+  }
+  return user;
+}
+
 async function handleApi(req, res, pathname) {
   if (pathname === "/api/login" && req.method === "POST") {
     const body = await parseJsonBody(req);
@@ -400,19 +490,21 @@ async function handleApi(req, res, pathname) {
 
     const savedUser = publicUser(user);
     const result = await store.withDb(async db => {
-      const invite = db.invites.find(item => item.code === body.inviteCode && item.active);
-      if (!invite) return { ok: false, status: 403, message: "Invite is invalid" };
       const userId = savedUser.id;
-      const alreadyUsed = invite.usedBy.includes(userId);
-      if (!alreadyUsed && invite.maxUses && invite.usedBy.length >= invite.maxUses) {
-        return { ok: false, status: 403, message: "Invite is exhausted" };
+      if (body.inviteCode) {
+        const invite = db.invites.find(item => item.code === body.inviteCode && item.active);
+        if (!invite) return { ok: false, status: 403, message: "Invite is invalid" };
+        const alreadyUsed = invite.usedBy.includes(userId);
+        if (!alreadyUsed && invite.maxUses && invite.usedBy.length >= invite.maxUses) {
+          return { ok: false, status: 403, message: "Invite is exhausted" };
+        }
+        if (!alreadyUsed) invite.usedBy.push(userId);
       }
       db.users[userId] = savedUser;
-      if (!alreadyUsed) invite.usedBy.push(userId);
       return { ok: true, user: savedUser, session: sessionPayload(db, userId) };
     });
 
-    if (!result.ok) return sendError(res, result.status, result.message);
+    if (result.ok === false) return sendError(res, result.status, result.message);
     return sendJson(res, 200, result);
   }
 
@@ -424,14 +516,66 @@ async function handleApi(req, res, pathname) {
     return sendJson(res, 200, { user, session: sessionPayload(db, user.id) });
   }
 
-  if (pathname === "/api/session/activate" && req.method === "POST") {
+  if ((pathname === "/api/session/join" || pathname === "/api/session/activate") && req.method === "POST") {
     const result = await store.withDb(async db => {
       db.users[user.id] = user;
       const session = getOrCreateSession(db);
+      if (session.status !== "joining") {
+        return { ok: false, status: 409, message: "Today's voting has already started" };
+      }
       if (!session.activeUsers.includes(user.id)) session.activeUsers.push(user.id);
       return { user, session: sessionPayload(db, user.id) };
     });
+    if (result.ok === false) return sendError(res, result.status, result.message);
     return sendJson(res, 200, result);
+  }
+
+  if (pathname === "/api/session/start-vote" && req.method === "POST") {
+    const result = await store.withDb(async db => {
+      const session = getOrCreateSession(db);
+      if (!session.activeUsers.includes(user.id)) {
+        return { ok: false, status: 409, message: "Join today's lunch first" };
+      }
+      if (session.activeUsers.length < 3) {
+        return { ok: false, status: 409, message: "At least 3 people are needed" };
+      }
+      if (!db.venues.length) {
+        return { ok: false, status: 409, message: "Add venues before voting" };
+      }
+      if (session.status === "joining") session.status = "voting";
+      return { ok: true, session: sessionPayload(db, user.id) };
+    });
+    if (result.ok === false) return sendError(res, result.status, result.message);
+    return sendJson(res, 200, result);
+  }
+
+  if (pathname === "/api/session/reveal" && req.method === "POST") {
+    const result = await store.withDb(async db => {
+      const session = getOrCreateSession(db);
+      if (!session.activeUsers.includes(user.id)) {
+        return { ok: false, status: 409, message: "Only participants can reveal the result" };
+      }
+      if (session.status !== "ready" && session.status !== "finished") {
+        return { ok: false, status: 409, message: "The result is not ready yet" };
+      }
+      if (session.status === "ready") {
+        session.status = "finished";
+        session.revealedAt = new Date().toISOString();
+      }
+      const score = scoreSession(session, db.venues);
+      const winner = score.winnerVenueId ? db.venues.find(venue => venue.id === score.winnerVenueId) || null : null;
+      const participants = session.activeUsers.map(id => db.users[id]).filter(Boolean);
+      const shouldNotify = !session.resultNotifiedAt;
+      if (shouldNotify) session.resultNotifiedAt = new Date().toISOString();
+      return {
+        ok: true,
+        session: sessionPayload(db, user.id),
+        notification: shouldNotify ? { users: participants, winner } : null
+      };
+    });
+    if (result.ok === false) return sendError(res, result.status, result.message);
+    if (result.notification) await notifyLunchResult(result.notification.users, result.notification.winner);
+    return sendJson(res, 200, { session: result.session });
   }
 
   if (pathname === "/api/vote" && req.method === "POST") {
@@ -441,8 +585,11 @@ async function handleApi(req, res, pathname) {
 
     const result = await store.withDb(async db => {
       const session = getOrCreateSession(db);
+      if (session.status !== "voting") {
+        return { ok: false, status: 409, message: "Voting is not active" };
+      }
       if (!session.activeUsers.includes(user.id)) {
-        return { ok: false, status: 409, message: "Activate today's session first" };
+        return { ok: false, status: 409, message: "Join today's lunch first" };
       }
       const venue = db.venues.find(item => item.id === body.venueId);
       if (!venue) return { ok: false, status: 404, message: "Venue not found" };
@@ -453,10 +600,73 @@ async function handleApi(req, res, pathname) {
         at: new Date().toISOString()
       };
 
+      if (allParticipantsVoted(session, db.venues)) {
+        session.status = "ready";
+      }
+
       return { ok: true, session: sessionPayload(db, user.id) };
     });
 
-    if (!result.ok) return sendError(res, result.status, result.message);
+    if (result.ok === false) return sendError(res, result.status, result.message);
+    return sendJson(res, 200, result);
+  }
+
+  if (pathname === "/api/admin/venues" && req.method === "GET") {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    const db = await store.readDb();
+    return sendJson(res, 200, { venues: db.venues });
+  }
+
+  if (pathname === "/api/admin/venues" && req.method === "POST") {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    const body = await parseJsonBody(req);
+    let venue;
+    try {
+      venue = normalizeVenue(body);
+    } catch (error) {
+      return sendError(res, 400, error.message);
+    }
+    const result = await store.withDb(async db => {
+      if (db.venues.some(item => item.id === venue.id)) {
+        return { ok: false, status: 409, message: "Venue already exists" };
+      }
+      db.venues.push(venue);
+      return { venues: db.venues, session: sessionPayload(db, admin.id) };
+    });
+    if (result.ok === false) return sendError(res, result.status, result.message);
+    return sendJson(res, 200, result);
+  }
+
+  if (pathname === "/api/admin/venues" && req.method === "PUT") {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    const body = await parseJsonBody(req);
+    let venue;
+    try {
+      venue = normalizeVenue(body);
+    } catch (error) {
+      return sendError(res, 400, error.message);
+    }
+    const result = await store.withDb(async db => {
+      const index = db.venues.findIndex(item => item.id === venue.id);
+      if (index === -1) return { ok: false, status: 404, message: "Venue not found" };
+      db.venues[index] = venue;
+      return { ok: true, venues: db.venues, session: sessionPayload(db, admin.id) };
+    });
+    if (result.ok === false) return sendError(res, result.status, result.message);
+    return sendJson(res, 200, result);
+  }
+
+  if (pathname === "/api/admin/venues" && req.method === "DELETE") {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    const body = await parseJsonBody(req);
+    const result = await store.withDb(async db => {
+      db.venues = db.venues.filter(venue => venue.id !== body.id);
+      return { venues: db.venues, session: sessionPayload(db, admin.id) };
+    });
     return sendJson(res, 200, result);
   }
 
@@ -500,8 +710,9 @@ const server = http.createServer(async (req, res) => {
     }
     await serveStatic(req, res, url.pathname);
   } catch (error) {
-    console.error(error);
-    sendError(res, 500, "Internal server error");
+    console.error(error?.stack || error);
+    const demoMode = process.env.DEMO_MODE !== "false";
+    sendError(res, 500, demoMode ? error.message : "Internal server error");
   }
 });
 

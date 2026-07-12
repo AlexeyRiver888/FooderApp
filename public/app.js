@@ -7,36 +7,73 @@ const state = {
   user: null,
   session: null,
   currentIndex: 0,
-  drag: null
+  drag: null,
+  pollTimer: null,
+  adminOpen: false
 };
 
 const els = {
-  loginPanel: document.querySelector("#loginPanel"),
-  inviteInput: document.querySelector("#inviteInput"),
-  loginButton: document.querySelector("#loginButton"),
-  sessionPanel: document.querySelector("#sessionPanel"),
-  activateButton: document.querySelector("#activateButton"),
-  activeCount: document.querySelector("#activeCount"),
+  adminToggle: document.querySelector("#adminToggle"),
+  statusPanel: document.querySelector("#statusPanel"),
   datePill: document.querySelector("#datePill"),
+  stageTitle: document.querySelector("#stageTitle"),
+  stageHint: document.querySelector("#stageHint"),
+  joinButton: document.querySelector("#joinButton"),
+  startVoteButton: document.querySelector("#startVoteButton"),
+  revealButton: document.querySelector("#revealButton"),
+  peoplePanel: document.querySelector("#peoplePanel"),
+  activeCount: document.querySelector("#activeCount"),
+  sessionStatus: document.querySelector("#sessionStatus"),
+  peopleList: document.querySelector("#peopleList"),
   winnerPanel: document.querySelector("#winnerPanel"),
   deck: document.querySelector("#deck"),
   venueCard: document.querySelector("#venueCard"),
   venueImage: document.querySelector("#venueImage"),
-  venueArea: document.querySelector("#venueArea"),
+  venueAddress: document.querySelector("#venueAddress"),
   venueName: document.querySelector("#venueName"),
-  venueTags: document.querySelector("#venueTags"),
   actions: document.querySelector("#actions"),
-  scoreboard: document.querySelector("#scoreboard"),
   yesBadge: document.querySelector(".vote-badge.yes"),
   noBadge: document.querySelector(".vote-badge.no"),
   vetoBadge: document.querySelector(".vote-badge.veto"),
   yesButton: document.querySelector("#yesButton"),
   noButton: document.querySelector("#noButton"),
-  vetoButton: document.querySelector("#vetoButton")
+  vetoButton: document.querySelector("#vetoButton"),
+  adminPanel: document.querySelector("#adminPanel"),
+  venueForm: document.querySelector("#venueForm"),
+  venueIdInput: document.querySelector("#venueIdInput"),
+  venueNameInput: document.querySelector("#venueNameInput"),
+  venueAddressInput: document.querySelector("#venueAddressInput"),
+  venueImageInput: document.querySelector("#venueImageInput"),
+  saveVenueButton: document.querySelector("#saveVenueButton"),
+  resetFormButton: document.querySelector("#resetFormButton"),
+  venueList: document.querySelector("#venueList")
 };
 
 function initData() {
   return tg?.initData || "";
+}
+
+function sessionDateText(date) {
+  if (!date) return "--";
+  const parsed = new Date(`${date}T00:00:00`);
+  return new Intl.DateTimeFormat("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric"
+  }).format(parsed);
+}
+
+function userName(user) {
+  return [user.firstName, user.lastName].filter(Boolean).join(" ") || user.username || `id ${user.id}`;
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }
 
 async function api(path, options = {}) {
@@ -64,25 +101,136 @@ function nextUnvotedIndex() {
   return venues.findIndex(venue => !state.session.votes[venue.id]);
 }
 
+function startPolling() {
+  if (state.pollTimer) return;
+  state.pollTimer = setInterval(async () => {
+    if (!state.user) return;
+    try {
+      const payload = await api("/api/session");
+      setSession(payload.session);
+    } catch {
+      // Polling is best-effort; direct actions still surface errors.
+    }
+  }, 5000);
+}
+
+async function login() {
+  try {
+    const payload = await api("/api/login", {
+      method: "POST",
+      body: JSON.stringify({ initData: initData() })
+    });
+    state.user = payload.user;
+    state.authHeader = initData() ? `tma ${initData()}` : "";
+    setSession(payload.session);
+    startPolling();
+  } catch (error) {
+    els.stageTitle.textContent = "Не получилось войти";
+    els.stageHint.textContent = initData()
+      ? error.message
+      : "Открой приложение из Telegram. В обычном браузере вход работает только в demo-режиме.";
+  }
+}
+
 function render() {
   const session = state.session;
-  els.loginPanel.classList.toggle("hidden", Boolean(state.user));
-  els.sessionPanel.classList.toggle("hidden", !state.user);
-  els.datePill.textContent = session?.date || "--";
-
   if (!session) return;
 
-  els.activeCount.textContent = String(session.activeUsers.length);
-  els.activateButton.disabled = session.isActive;
-  els.activateButton.textContent = session.isActive ? "День активен" : "Активировать день";
+  els.datePill.textContent = sessionDateText(session.date);
+  els.peoplePanel.classList.toggle("hidden", !state.user);
+  els.activeCount.textContent = `${session.activeUsers.length} чел.`;
+  els.sessionStatus.textContent = statusLabel(session.status);
+  els.peopleList.innerHTML = session.activeUsers.length
+    ? session.activeUsers.map(user => `<span>${escapeHtml(userName(user))}</span>`).join("")
+    : "<span>Пока никто не нажал «Погнали»</span>";
 
-  const canVote = session.isActive && state.currentIndex >= 0;
-  els.deck.classList.toggle("hidden", !canVote);
-  els.actions.classList.toggle("hidden", !canVote);
+  els.adminToggle.classList.toggle("hidden", !session.isAdmin);
+  els.adminPanel.classList.toggle("hidden", !session.isAdmin || !state.adminOpen);
+  if (session.isAdmin) renderAdminVenues();
 
-  if (canVote) renderVenue(session.venues[state.currentIndex]);
-  renderWinner();
-  renderScoreboard();
+  els.joinButton.classList.add("hidden");
+  els.startVoteButton.classList.add("hidden");
+  els.revealButton.classList.add("hidden");
+  els.deck.classList.add("hidden");
+  els.actions.classList.add("hidden");
+  els.winnerPanel.classList.add("hidden");
+
+  if (!session.venues.length) {
+    els.stageTitle.textContent = "Сначала добавь заведения";
+    els.stageHint.textContent = session.isAdmin
+      ? "Открой админку и добавь название, адрес и картинку."
+      : "Админ пока не добавил заведения для голосования.";
+    return;
+  }
+
+  if (session.status === "joining") renderJoining(session);
+  if (session.status === "voting") renderVoting(session);
+  if (session.status === "ready") renderReady(session);
+  if (session.status === "finished") renderFinished(session);
+}
+
+function statusLabel(status) {
+  if (status === "joining") return "сбор";
+  if (status === "voting") return "голосование";
+  if (status === "ready") return "готово";
+  if (status === "finished") return "выбрали";
+  return status;
+}
+
+function renderJoining(session) {
+  els.stageTitle.textContent = `Обедаем ${sessionDateText(session.date)}?`;
+  if (!session.isActive) {
+    els.stageHint.textContent = "Нажми «Погнали», чтобы попасть в список участников.";
+    els.joinButton.classList.remove("hidden");
+    return;
+  }
+
+  if (session.canStartVoting) {
+    els.stageHint.textContent = "Набралось минимум 3 человека. Можно начинать голосование.";
+    els.startVoteButton.classList.remove("hidden");
+    return;
+  }
+
+  els.stageHint.textContent = `Ждем еще людей. Нужно минимум 3, сейчас ${session.activeUsers.length}.`;
+}
+
+function renderVoting(session) {
+  if (session.canVote && state.currentIndex >= 0) {
+    els.stageTitle.textContent = "Выбирай свайпами";
+    els.stageHint.textContent = "Вправо — да, влево — нет, вверх — ветто.";
+    renderVenue(session.venues[state.currentIndex]);
+    els.deck.classList.remove("hidden");
+    els.actions.classList.remove("hidden");
+    return;
+  }
+
+  els.stageTitle.textContent = "Твой голос принят";
+  els.stageHint.textContent = `Ждем остальных: ${session.progress.done} из ${session.progress.total} голосов.`;
+}
+
+function renderReady() {
+  els.stageTitle.textContent = "Все проголосовали";
+  els.stageHint.textContent = "Интрига выдержана. Можно открыть результат.";
+  els.revealButton.classList.remove("hidden");
+}
+
+function renderFinished(session) {
+  if (session.winner) {
+    els.stageTitle.textContent = "Идем сюда";
+    els.stageHint.textContent = "Победитель уже отправлен участникам сообщением от бота.";
+    els.winnerPanel.innerHTML = `
+      <img src="${escapeHtml(session.winner.image)}" alt="" />
+      <div>
+        <strong>${escapeHtml(session.winner.name)}</strong>
+        <span>${escapeHtml(session.winner.address || session.winner.area)}</span>
+      </div>
+    `;
+  } else {
+    els.stageTitle.textContent = "Победитель не определился";
+    els.stageHint.textContent = "Похоже, получилась ничья или все варианты заблокированы ветто.";
+    els.winnerPanel.innerHTML = "<strong>Нужен ручной выбор</strong>";
+  }
+  els.winnerPanel.classList.remove("hidden");
 }
 
 function renderVenue(venue) {
@@ -92,42 +240,29 @@ function renderVenue(venue) {
   setBadgeOpacity(0, 0, 0);
   els.venueImage.src = venue.image;
   els.venueImage.alt = venue.name;
-  els.venueArea.textContent = venue.area;
+  els.venueAddress.textContent = venue.address || venue.area;
   els.venueName.textContent = venue.name;
-  els.venueTags.innerHTML = venue.tags.map(tag => `<span>${tag}</span>`).join("");
 }
 
-function renderWinner() {
-  const winnerId = state.session.score.winnerVenueId;
-  const winner = state.session.venues.find(venue => venue.id === winnerId);
-  els.winnerPanel.classList.toggle("hidden", !winner);
-  if (winner) {
-    els.winnerPanel.innerHTML = `<strong>${winner.name}</strong><br><span>Побеждает прямо сейчас</span>`;
-  }
-}
-
-function renderScoreboard() {
-  els.scoreboard.classList.toggle("hidden", !state.session);
-  const rows = state.session.score.stats
-    .map(item => ({
-      ...item,
-      venue: state.session.venues.find(venue => venue.id === item.venueId)
-    }))
-    .sort((a, b) => Number(b.eligible) - Number(a.eligible) || b.yes - a.yes)
-    .map(item => {
-      const blocked = item.veto > 0 ? " · ветто" : "";
-      return `
-        <div class="score-row">
-          <div>
-            <strong>${item.venue.name}</strong>
-            <div class="score-meta">${item.yes} да · ${item.no} нет${blocked}</div>
-          </div>
-          <strong>${item.eligible ? item.yes : "X"}</strong>
-        </div>
-      `;
-    })
-    .join("");
-  els.scoreboard.innerHTML = rows;
+function renderAdminVenues() {
+  const venues = state.session?.venues || [];
+  els.venueList.innerHTML = venues.length
+    ? venues
+        .map(
+          venue => `
+            <div class="venue-row">
+              <img src="${escapeHtml(venue.image)}" alt="" />
+              <div>
+                <strong>${escapeHtml(venue.name)}</strong>
+                <span>${escapeHtml(venue.address || venue.area)}</span>
+              </div>
+              <button data-edit="${escapeHtml(venue.id)}" type="button">Изм.</button>
+              <button data-delete="${escapeHtml(venue.id)}" type="button">Удал.</button>
+            </div>
+          `
+        )
+        .join("")
+    : "<p class='hint'>Заведений пока нет.</p>";
 }
 
 function setBadgeOpacity(yes, no, veto) {
@@ -136,30 +271,27 @@ function setBadgeOpacity(yes, no, veto) {
   els.vetoBadge.style.opacity = veto;
 }
 
-async function login() {
-  els.loginButton.disabled = true;
+async function joinLunch() {
   try {
-    const payload = await api("/api/login", {
-      method: "POST",
-      body: JSON.stringify({
-        inviteCode: els.inviteInput.value.trim(),
-        initData: initData()
-      })
-    });
-    state.user = payload.user;
-    state.authHeader = `tma ${initData()}`;
-    if (!initData()) state.authHeader = "";
+    const payload = await api("/api/session/join", { method: "POST", body: "{}" });
     setSession(payload.session);
   } catch (error) {
     alert(error.message);
-  } finally {
-    els.loginButton.disabled = false;
   }
 }
 
-async function activate() {
+async function startVote() {
   try {
-    const payload = await api("/api/session/activate", { method: "POST", body: "{}" });
+    const payload = await api("/api/session/start-vote", { method: "POST", body: "{}" });
+    setSession(payload.session);
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
+async function reveal() {
+  try {
+    const payload = await api("/api/session/reveal", { method: "POST", body: "{}" });
     setSession(payload.session);
   } catch (error) {
     alert(error.message);
@@ -192,7 +324,7 @@ function animateOut(value) {
 }
 
 function onPointerDown(event) {
-  if (!state.session?.isActive) return;
+  if (!state.session?.canVote) return;
   els.venueCard.setPointerCapture(event.pointerId);
   state.drag = {
     startX: event.clientX,
@@ -222,8 +354,66 @@ function onPointerUp() {
   render();
 }
 
-els.loginButton.addEventListener("click", login);
-els.activateButton.addEventListener("click", activate);
+function resetVenueForm() {
+  els.venueIdInput.value = "";
+  els.venueNameInput.value = "";
+  els.venueAddressInput.value = "";
+  els.venueImageInput.value = "";
+  els.saveVenueButton.textContent = "Сохранить";
+}
+
+async function saveVenue(event) {
+  event.preventDefault();
+  const venue = {
+    id: els.venueIdInput.value,
+    name: els.venueNameInput.value,
+    address: els.venueAddressInput.value,
+    image: els.venueImageInput.value
+  };
+  const method = venue.id ? "PUT" : "POST";
+  try {
+    const payload = await api("/api/admin/venues", {
+      method,
+      body: JSON.stringify(venue)
+    });
+    setSession(payload.session);
+    resetVenueForm();
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
+async function deleteVenue(id) {
+  if (!confirm("Удалить заведение?")) return;
+  try {
+    const payload = await api("/api/admin/venues", {
+      method: "DELETE",
+      body: JSON.stringify({ id })
+    });
+    setSession(payload.session);
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
+function onVenueListClick(event) {
+  const editId = event.target.dataset.edit;
+  const deleteId = event.target.dataset.delete;
+  if (editId) {
+    const venue = state.session.venues.find(item => item.id === editId);
+    if (!venue) return;
+    els.venueIdInput.value = venue.id;
+    els.venueNameInput.value = venue.name;
+    els.venueAddressInput.value = venue.address || venue.area;
+    els.venueImageInput.value = venue.image;
+    els.saveVenueButton.textContent = "Обновить";
+  }
+  if (deleteId) deleteVenue(deleteId);
+}
+
+els.joinButton.addEventListener("click", joinLunch);
+els.startVoteButton.addEventListener("click", startVote);
+els.revealButton.addEventListener("click", reveal);
 els.yesButton.addEventListener("click", () => vote("yes"));
 els.noButton.addEventListener("click", () => vote("no"));
 els.vetoButton.addEventListener("click", () => vote("veto"));
@@ -231,7 +421,12 @@ els.venueCard.addEventListener("pointerdown", onPointerDown);
 els.venueCard.addEventListener("pointermove", onPointerMove);
 els.venueCard.addEventListener("pointerup", onPointerUp);
 els.venueCard.addEventListener("pointercancel", onPointerUp);
+els.adminToggle.addEventListener("click", () => {
+  state.adminOpen = !state.adminOpen;
+  render();
+});
+els.venueForm.addEventListener("submit", saveVenue);
+els.resetFormButton.addEventListener("click", resetVenueForm);
+els.venueList.addEventListener("click", onVenueListClick);
 
-if (tg?.initDataUnsafe?.user) {
-  els.inviteInput.focus();
-}
+login();
