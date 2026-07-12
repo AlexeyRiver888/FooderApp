@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Daily Venue Vote</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Daily session</p>
+          <h1>Куда идем?</h1>
+        </div>
+        <div class="date-pill" id="datePill">--</div>
+      </header>
+
+      <section class="login-panel" id="loginPanel">
+        <label for="inviteInput">Инвайт</label>
+        <div class="invite-row">
+          <input id="inviteInput" autocomplete="one-time-code" placeholder="Введите код" value="demo" />
+          <button id="loginButton">Войти</button>
+        </div>
+        <p class="hint">В Telegram авторизация берется из аккаунта автоматически. В браузере работает demo-режим.</p>
+      </section>
+
+      <section class="session-panel hidden" id="sessionPanel">
+        <div class="session-status">
+          <div>
+            <p class="eyebrow">Сегодня участвуют</p>
+            <strong id="activeCount">0</strong>
+          </div>
+          <button id="activateButton">Активировать день</button>
+        </div>
+      </section>
+
+      <section class="winner hidden" id="winnerPanel"></section>
+
+      <section class="deck hidden" id="deck">
+        <article class="venue-card" id="venueCard">
+          <img id="venueImage" alt="" />
+          <div class="card-shade"></div>
+          <div class="vote-badge yes">Да</div>
+          <div class="vote-badge no">Нет</div>
+          <div class="vote-badge veto">Ветто</div>
+          <div class="venue-copy">
+            <p id="venueArea"></p>
+            <h2 id="venueName"></h2>
+            <div id="venueTags" class="tags"></div>
+          </div>
+        </article>
+      </section>
+
+      <section class="actions hidden" id="actions">
+        <button class="icon-action no" id="noButton" aria-label="Нет">←</button>
+        <button class="icon-action veto" id="vetoButton" aria-label="Ветто">!</button>
+        <button class="icon-action yes" id="yesButton" aria-label="Да">→</button>
+      </section>
+
+      <section class="scoreboard hidden" id="scoreboard"></section>
+    </main>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
