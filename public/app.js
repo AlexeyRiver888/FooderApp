@@ -48,6 +48,7 @@ const els = {
   venueImagePreview: document.querySelector("#venueImagePreview"),
   saveVenueButton: document.querySelector("#saveVenueButton"),
   resetFormButton: document.querySelector("#resetFormButton"),
+  resetSessionButton: document.querySelector("#resetSessionButton"),
   venueList: document.querySelector("#venueList")
 };
 
@@ -427,6 +428,21 @@ async function deleteVenue(id) {
   }
 }
 
+async function resetSession() {
+  if (!confirm("Сбросить сегодняшнюю сессию? Участники и голоса за сегодня будут удалены.")) return;
+  try {
+    const payload = await api("/api/admin/session/reset", {
+      method: "POST",
+      body: "{}"
+    });
+    setSession(payload.session);
+    state.adminOpen = false;
+    render();
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
 function onVenueListClick(event) {
   const editId = event.target.dataset.edit;
   const deleteId = event.target.dataset.delete;
@@ -486,6 +502,7 @@ els.adminToggle.addEventListener("click", () => {
 els.venueForm.addEventListener("submit", saveVenue);
 els.venuePhotoInput.addEventListener("change", onPhotoSelected);
 els.resetFormButton.addEventListener("click", resetVenueForm);
+els.resetSessionButton.addEventListener("click", resetSession);
 els.venueList.addEventListener("click", onVenueListClick);
 
 login();

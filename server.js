@@ -670,6 +670,21 @@ async function handleApi(req, res, pathname) {
     return sendJson(res, 200, result);
   }
 
+  if (pathname === "/api/admin/session/reset" && req.method === "POST") {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    const result = await store.withDb(async db => {
+      const session = getOrCreateSession(db);
+      session.status = "joining";
+      session.activeUsers = [];
+      session.votes = {};
+      session.revealedAt = null;
+      session.resultNotifiedAt = null;
+      return { session: sessionPayload(db, admin.id) };
+    });
+    return sendJson(res, 200, result);
+  }
+
   sendError(res, 404, "Not found");
 }
 
