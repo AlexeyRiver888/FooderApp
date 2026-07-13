@@ -9,7 +9,8 @@ const state = {
   currentIndex: 0,
   drag: null,
   pollTimer: null,
-  adminOpen: false
+  adminOpen: false,
+  pendingVotes: {}
 };
 
 const els = {
@@ -118,12 +119,40 @@ async function compressImage(file) {
 function setSession(session) {
   state.session = session;
   state.currentIndex = nextUnvotedIndex();
+  cleanupPendingVotes();
+  preloadUpcomingImages();
   render();
 }
 
 function nextUnvotedIndex() {
   const venues = state.session?.venues || [];
-  return venues.findIndex(venue => !state.session.votes[venue.id]);
+  return venues.findIndex(venue => !effectiveVotes()[venue.id]);
+}
+
+function effectiveVotes() {
+  return {
+    ...(state.session?.votes || {}),
+    ...state.pendingVotes
+  };
+}
+
+function cleanupPendingVotes() {
+  if (!state.session) return;
+  for (const [venueId, vote] of Object.entries(state.pendingVotes)) {
+    if (state.session.votes[venueId] === vote) delete state.pendingVotes[venueId];
+  }
+}
+
+function preloadUpcomingImages() {
+  const venues = state.session?.venues || [];
+  const votes = effectiveVotes();
+  venues
+    .filter(venue => !votes[venue.id])
+    .slice(0, 3)
+    .forEach(venue => {
+      const image = new Image();
+      image.src = venue.image;
+    });
 }
 
 function startPolling() {
@@ -160,6 +189,7 @@ async function login() {
 function render() {
   const session = state.session;
   if (!session) return;
+  const canVoteNow = session.status === "voting" && session.isActive;
 
   els.datePill.textContent = sessionDateText(session.date);
   els.peoplePanel.classList.toggle("hidden", !state.user);
@@ -189,7 +219,7 @@ function render() {
   }
 
   if (session.status === "joining") renderJoining(session);
-  if (session.status === "voting") renderVoting(session);
+  if (session.status === "voting") renderVoting(session, canVoteNow);
   if (session.status === "ready") renderReady(session);
   if (session.status === "finished") renderFinished(session);
 }
@@ -219,8 +249,8 @@ function renderJoining(session) {
   els.stageHint.textContent = `Ждем еще людей. Нужно минимум 3, сейчас ${session.activeUsers.length}.`;
 }
 
-function renderVoting(session) {
-  if (session.canVote && state.currentIndex >= 0) {
+function renderVoting(session, canVoteNow) {
+  if (canVoteNow && state.currentIndex >= 0) {
     els.stageTitle.textContent = "Выбирай свайпами";
     els.stageHint.textContent = "Вправо — да, влево — нет, вверх — ветто.";
     renderVenue(session.venues[state.currentIndex]);
@@ -331,13 +361,21 @@ async function vote(value) {
   if (!venue) return;
 
   animateOut(value);
+  state.pendingVotes[venue.id] = value;
+  const previousIndex = state.currentIndex;
+  state.currentIndex = nextUnvotedIndex();
+  setTimeout(() => {
+    if (state.currentIndex !== previousIndex) render();
+  }, 160);
+
   try {
     const payload = await api("/api/vote", {
       method: "POST",
       body: JSON.stringify({ venueId: venue.id, vote: value })
     });
-    setTimeout(() => setSession(payload.session), 160);
+    setSession(payload.session);
   } catch (error) {
+    delete state.pendingVotes[venue.id];
     alert(error.message);
     render();
   }
