@@ -414,6 +414,9 @@ async function createPostgresStore() {
         ]
       );
 
+      await client.query("delete from session_active_users where session_date = $1", [session.date]);
+      await client.query("delete from votes where session_date = $1", [session.date]);
+
       for (const userId of session.activeUsers || []) {
         await client.query(
           `insert into session_active_users (session_date, user_id)
@@ -665,6 +668,9 @@ async function handleApi(req, res, pathname) {
     const body = await parseJsonBody(req);
     const result = await store.withDb(async db => {
       db.venues = db.venues.filter(venue => venue.id !== body.id);
+      for (const session of Object.values(db.sessions)) {
+        if (session.votes) delete session.votes[body.id];
+      }
       return { venues: db.venues, session: sessionPayload(db, admin.id) };
     });
     return sendJson(res, 200, result);
