@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   allParticipantsVoted,
+  applyScheduleToSession,
   cloneDefaultDb,
   getOrCreateSession,
   isAdminUser,
@@ -11,6 +12,7 @@ import {
   publicUser,
   scoreSession,
   sessionPayload,
+  todayKey,
   validateTelegramInitData
 } from "./lib/app-core.js";
 
@@ -38,6 +40,7 @@ await loadEnv();
 const PORT = Number(process.env.PORT || 3000);
 const DATABASE_URL = process.env.DATABASE_URL || "";
 const BOT_TOKEN = process.env.BOT_TOKEN || "";
+const APP_URL = process.env.APP_URL || "";
 const DATA_DIR = path.join(__dirname, "data");
 const PUBLIC_DIR = path.join(__dirname, "public");
 const DB_FILE = path.join(DATA_DIR, "db.json");
@@ -109,11 +112,85 @@ async function sendBotMessage(chatId, text) {
   }
 }
 
+async function sendBotWebAppMessage(chatId, text, buttonText) {
+  if (!BOT_TOKEN) return;
+  const replyMarkup = APP_URL
+    ? {
+        inline_keyboard: [
+          [
+            {
+              text: buttonText,
+              web_app: { url: APP_URL }
+            }
+          ]
+        ]
+      }
+    : undefined;
+
+  try {
+    const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        reply_markup: replyMarkup,
+        disable_web_page_preview: true
+      })
+    });
+    if (!response.ok) {
+      console.error("Telegram web_app sendMessage failed", response.status, await response.text());
+    }
+  } catch (error) {
+    console.error("Telegram web_app sendMessage error", error);
+  }
+}
+
 async function notifyLunchResult(users, winner) {
   const text = winner
     ? `Готово, идем сюда:\n${winner.name}\n${winner.address || winner.area}`
     : "Готово, но сегодня нет заведений для выбора.";
   await Promise.all(users.map(user => sendBotMessage(user.id, text)));
+}
+
+function refreshTodaySession(db) {
+  const session = getOrCreateSession(db, todayKey());
+  const previousStatus = session.status;
+  applyScheduleToSession(session, db.venues);
+  return { session, previousStatus };
+}
+
+async function runScheduledNotifications() {
+  if (!store) return;
+  const notifications = await store.withDb(async db => {
+    const { session, previousStatus } = refreshTodaySession(db);
+    const messages = [];
+    const allUsers = Object.values(db.users);
+
+    if (session.status === "joining" && !session.lunchPromptNotifiedAt) {
+      session.lunchPromptNotifiedAt = new Date().toISOString();
+      messages.push({
+        users: allUsers,
+        text: `Идешь на обед ${session.date}?`,
+        button: "Погнали"
+      });
+    }
+
+    if (previousStatus !== "voting" && session.status === "voting" && !session.votingNotifiedAt) {
+      session.votingNotifiedAt = new Date().toISOString();
+      messages.push({
+        users: session.activeUsers.map(id => db.users[id]).filter(Boolean),
+        text: "Голосование началось!",
+        button: "Участвую"
+      });
+    }
+
+    return messages;
+  });
+
+  for (const message of notifications) {
+    await Promise.all(message.users.map(user => sendBotWebAppMessage(user.id, message.text, message.button)));
+  }
 }
 
 function pickRandomVenue(venues) {
@@ -203,7 +280,9 @@ async function createPostgresStore() {
         revealed_at timestamptz,
         result_notified_at timestamptz,
         winner_venue_id text,
-        winner_reason text
+        winner_reason text,
+        lunch_prompt_notified_at timestamptz,
+        voting_notified_at timestamptz
       );
 
       create table if not exists session_active_users (
@@ -228,6 +307,8 @@ async function createPostgresStore() {
       alter table sessions add column if not exists result_notified_at timestamptz;
       alter table sessions add column if not exists winner_venue_id text;
       alter table sessions add column if not exists winner_reason text;
+      alter table sessions add column if not exists lunch_prompt_notified_at timestamptz;
+      alter table sessions add column if not exists voting_notified_at timestamptz;
     `);
 
     const seed = cloneDefaultDb();
@@ -257,7 +338,7 @@ async function createPostgresStore() {
       "select id, name, coalesce(nullif(address, ''), area) as address, image from venues order by sort_order, name"
     );
     const sessionsResult = await client.query(
-      "select date, status, created_at, revealed_at, result_notified_at, winner_venue_id, winner_reason from sessions"
+      "select date, status, created_at, revealed_at, result_notified_at, winner_venue_id, winner_reason, lunch_prompt_notified_at, voting_notified_at from sessions"
     );
     const activeResult = await client.query("select session_date, user_id from session_active_users");
     const votesResult = await client.query("select session_date, venue_id, user_id, value, voted_at from votes");
@@ -308,7 +389,9 @@ async function createPostgresStore() {
         revealedAt: row.revealed_at?.toISOString?.() || row.revealed_at || null,
         resultNotifiedAt: row.result_notified_at?.toISOString?.() || row.result_notified_at || null,
         winnerVenueId: row.winner_venue_id || null,
-        winnerReason: row.winner_reason || null
+        winnerReason: row.winner_reason || null,
+        lunchPromptNotifiedAt: row.lunch_prompt_notified_at?.toISOString?.() || row.lunch_prompt_notified_at || null,
+        votingNotifiedAt: row.voting_notified_at?.toISOString?.() || row.voting_notified_at || null
       };
     }
 
@@ -322,7 +405,9 @@ async function createPostgresStore() {
         revealedAt: null,
         resultNotifiedAt: null,
         winnerVenueId: null,
-        winnerReason: null
+        winnerReason: null,
+        lunchPromptNotifiedAt: null,
+        votingNotifiedAt: null
       };
       db.sessions[row.session_date].activeUsers.push(row.user_id);
     }
@@ -337,7 +422,9 @@ async function createPostgresStore() {
         revealedAt: null,
         resultNotifiedAt: null,
         winnerVenueId: null,
-        winnerReason: null
+        winnerReason: null,
+        lunchPromptNotifiedAt: null,
+        votingNotifiedAt: null
       };
       db.sessions[row.session_date].votes[row.venue_id] ||= {};
       db.sessions[row.session_date].votes[row.venue_id][row.user_id] = {
@@ -414,14 +501,16 @@ async function createPostgresStore() {
 
     for (const session of Object.values(db.sessions)) {
       await client.query(
-        `insert into sessions (date, status, created_at, revealed_at, result_notified_at, winner_venue_id, winner_reason)
-         values ($1, $2, coalesce($3::timestamptz, now()), $4::timestamptz, $5::timestamptz, $6, $7)
+        `insert into sessions (date, status, created_at, revealed_at, result_notified_at, winner_venue_id, winner_reason, lunch_prompt_notified_at, voting_notified_at)
+         values ($1, $2, coalesce($3::timestamptz, now()), $4::timestamptz, $5::timestamptz, $6, $7, $8::timestamptz, $9::timestamptz)
          on conflict (date) do update set
            status = excluded.status,
            revealed_at = excluded.revealed_at,
            result_notified_at = excluded.result_notified_at,
            winner_venue_id = excluded.winner_venue_id,
-           winner_reason = excluded.winner_reason`,
+           winner_reason = excluded.winner_reason,
+           lunch_prompt_notified_at = excluded.lunch_prompt_notified_at,
+           voting_notified_at = excluded.voting_notified_at`,
         [
           session.date,
           session.status || "joining",
@@ -429,7 +518,9 @@ async function createPostgresStore() {
           session.revealedAt || null,
           session.resultNotifiedAt || null,
           session.winnerVenueId || null,
-          session.winnerReason || null
+          session.winnerReason || null,
+          session.lunchPromptNotifiedAt || null,
+          session.votingNotifiedAt || null
         ]
       );
 
@@ -523,6 +614,7 @@ async function handleApi(req, res, pathname) {
         if (!alreadyUsed) invite.usedBy.push(userId);
       }
       db.users[userId] = savedUser;
+      refreshTodaySession(db);
       return { ok: true, user: savedUser, session: sessionPayload(db, userId) };
     });
 
@@ -534,16 +626,20 @@ async function handleApi(req, res, pathname) {
   if (!user) return;
 
   if (pathname === "/api/session" && req.method === "GET") {
-    const db = await store.readDb();
-    return sendJson(res, 200, { user, session: sessionPayload(db, user.id) });
+    const result = await store.withDb(async db => {
+      refreshTodaySession(db);
+      return { user, session: sessionPayload(db, user.id) };
+    });
+    return sendJson(res, 200, result);
   }
 
   if ((pathname === "/api/session/join" || pathname === "/api/session/activate") && req.method === "POST") {
     const result = await store.withDb(async db => {
       db.users[user.id] = user;
+      refreshTodaySession(db);
       const session = getOrCreateSession(db);
       if (session.status !== "joining") {
-        return { ok: false, status: 409, message: "Today's voting has already started" };
+        return { ok: false, status: 409, message: "Сбор участников уже закрыт" };
       }
       if (!session.activeUsers.includes(user.id)) session.activeUsers.push(user.id);
       return { user, session: sessionPayload(db, user.id) };
@@ -554,6 +650,7 @@ async function handleApi(req, res, pathname) {
 
   if (pathname === "/api/session/start-vote" && req.method === "POST") {
     const result = await store.withDb(async db => {
+      refreshTodaySession(db);
       const session = getOrCreateSession(db);
       if (!session.activeUsers.includes(user.id)) {
         return { ok: false, status: 409, message: "Join today's lunch first" };
@@ -564,7 +661,9 @@ async function handleApi(req, res, pathname) {
       if (!db.venues.length) {
         return { ok: false, status: 409, message: "Add venues before voting" };
       }
-      if (session.status === "joining") session.status = "voting";
+      if (session.status !== "voting") {
+        return { ok: false, status: 409, message: "Голосование начнется в 11:20 по Екатеринбургу" };
+      }
       return { ok: true, session: sessionPayload(db, user.id) };
     });
     if (result.ok === false) return sendError(res, result.status, result.message);
@@ -573,6 +672,7 @@ async function handleApi(req, res, pathname) {
 
   if (pathname === "/api/session/reveal" && req.method === "POST") {
     const result = await store.withDb(async db => {
+      refreshTodaySession(db);
       const session = getOrCreateSession(db);
       if (!session.activeUsers.includes(user.id)) {
         return { ok: false, status: 409, message: "Only participants can reveal the result" };
@@ -613,6 +713,7 @@ async function handleApi(req, res, pathname) {
     if (!allowedVotes.has(body.vote)) return sendError(res, 400, "Unknown vote");
 
     const result = await store.withDb(async db => {
+      refreshTodaySession(db);
       const session = getOrCreateSession(db);
       if (session.status !== "voting") {
         return { ok: false, status: 409, message: "Voting is not active" };
@@ -657,7 +758,8 @@ async function handleApi(req, res, pathname) {
     } catch (error) {
       return sendError(res, 400, error.message);
     }
-    const result = await store.withDb(async db => {
+      const result = await store.withDb(async db => {
+      refreshTodaySession(db);
       if (db.venues.some(item => item.id === venue.id)) {
         return { ok: false, status: 409, message: "Venue already exists" };
       }
@@ -679,6 +781,7 @@ async function handleApi(req, res, pathname) {
       return sendError(res, 400, error.message);
     }
     const result = await store.withDb(async db => {
+      refreshTodaySession(db);
       const index = db.venues.findIndex(item => item.id === venue.id);
       if (index === -1) return { ok: false, status: 404, message: "Venue not found" };
       db.venues[index] = venue;
@@ -693,6 +796,7 @@ async function handleApi(req, res, pathname) {
     if (!admin) return;
     const body = await parseJsonBody(req);
     const result = await store.withDb(async db => {
+      refreshTodaySession(db);
       db.venues = db.venues.filter(venue => venue.id !== body.id);
       for (const session of Object.values(db.sessions)) {
         if (session.votes) delete session.votes[body.id];
@@ -714,6 +818,8 @@ async function handleApi(req, res, pathname) {
       session.resultNotifiedAt = null;
       session.winnerVenueId = null;
       session.winnerReason = null;
+      session.lunchPromptNotifiedAt = null;
+      session.votingNotifiedAt = null;
       return { session: sessionPayload(db, admin.id) };
     });
     return sendJson(res, 200, result);
@@ -749,6 +855,10 @@ async function serveStatic(req, res, pathname) {
 
 store = DATABASE_URL ? await createPostgresStore() : createFileStore();
 await store.init();
+await runScheduledNotifications();
+setInterval(() => {
+  runScheduledNotifications().catch(error => console.error("Scheduled notification error", error));
+}, 60_000);
 
 const server = http.createServer(async (req, res) => {
   try {

@@ -302,10 +302,18 @@ DEMO_MODE=false
 Переменная 3:
 
 ```env
+APP_URL=https://твой-проект.up.railway.app
+```
+
+Это публичный Railway URL mini-app. Он нужен, чтобы бот мог присылать сообщения с кнопкой открытия приложения.
+
+Переменная 4:
+
+```env
 APP_TIMEZONE=Asia/Yekaterinburg
 ```
 
-Переменная 4:
+Переменная 5:
 
 ```env
 DATABASE_URL=строка_из_Supabase
@@ -317,7 +325,7 @@ DATABASE_URL=строка_из_Supabase
 DATABASE_URL=postgres://postgres.abcxyz:mydatabasepassword@aws-0-eu.pooler.supabase.com:5432/postgres
 ```
 
-Переменная 5:
+Переменная 6:
 
 ```env
 ADMIN_TELEGRAM_IDS=твой_telegram_id

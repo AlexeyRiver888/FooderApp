@@ -222,31 +222,34 @@ function render() {
   if (session.status === "voting") renderVoting(session, canVoteNow);
   if (session.status === "ready") renderReady(session);
   if (session.status === "finished") renderFinished(session);
+  if (session.status === "waiting") renderWaiting(session);
+  if (session.status === "closed") renderClosed(session);
 }
 
 function statusLabel(status) {
+  if (status === "waiting") return "ожидание";
   if (status === "joining") return "сбор";
   if (status === "voting") return "голосование";
   if (status === "ready") return "готово";
   if (status === "finished") return "выбрали";
+  if (status === "closed") return "закрыто";
   return status;
+}
+
+function renderWaiting(session) {
+  els.stageTitle.textContent = `Обедаем ${sessionDateText(session.date)}?`;
+  els.stageHint.textContent = "Сбор участников откроется в 11:00 по Екатеринбургу.";
 }
 
 function renderJoining(session) {
   els.stageTitle.textContent = `Обедаем ${sessionDateText(session.date)}?`;
   if (!session.isActive) {
-    els.stageHint.textContent = "Нажми «Погнали», чтобы попасть в список участников.";
+    els.stageHint.textContent = "Сбор открыт до 11:20 по Екатеринбургу. Нажми «Погнали», чтобы попасть в список участников.";
     els.joinButton.classList.remove("hidden");
     return;
   }
 
-  if (session.canStartVoting) {
-    els.stageHint.textContent = "Набралось минимум 3 человека. Можно начинать голосование.";
-    els.startVoteButton.classList.remove("hidden");
-    return;
-  }
-
-  els.stageHint.textContent = `Ждем еще людей. Нужно минимум 3, сейчас ${session.activeUsers.length}.`;
+  els.stageHint.textContent = `Ты в списке. Ждем 11:20, потом голосование начнется автоматически. Сейчас ${session.activeUsers.length} чел.`;
 }
 
 function renderVoting(session, canVoteNow) {
@@ -261,6 +264,14 @@ function renderVoting(session, canVoteNow) {
 
   els.stageTitle.textContent = "Твой голос принят";
   els.stageHint.textContent = `Ждем остальных: ${session.progress.done} из ${session.progress.total} голосов.`;
+}
+
+function renderClosed(session) {
+  els.stageTitle.textContent = "Сбор закрыт";
+  els.stageHint.textContent =
+    session.activeUsers.length < 3
+      ? `Сегодня не набралось 3 человека. Успели записаться: ${session.activeUsers.length}.`
+      : "Сбор закрыт, но голосование не началось. Проверь, добавлены ли заведения.";
 }
 
 function renderReady() {
