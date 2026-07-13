@@ -28,6 +28,19 @@ input {
   font: inherit;
 }
 
+input[type="file"] {
+  height: auto;
+  padding: 11px 12px;
+}
+
+.image-preview {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  object-fit: cover;
+}
+
 button {
   border: 0;
   cursor: pointer;

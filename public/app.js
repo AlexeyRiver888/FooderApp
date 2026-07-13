@@ -44,6 +44,8 @@ const els = {
   venueNameInput: document.querySelector("#venueNameInput"),
   venueAddressInput: document.querySelector("#venueAddressInput"),
   venueImageInput: document.querySelector("#venueImageInput"),
+  venuePhotoInput: document.querySelector("#venuePhotoInput"),
+  venueImagePreview: document.querySelector("#venueImagePreview"),
   saveVenueButton: document.querySelector("#saveVenueButton"),
   resetFormButton: document.querySelector("#resetFormButton"),
   venueList: document.querySelector("#venueList")
@@ -88,6 +90,28 @@ async function api(path, options = {}) {
   const payload = await response.json();
   if (!response.ok) throw new Error(payload.error || "Request failed");
   return payload;
+}
+
+function fileToImage(file) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = reject;
+    image.src = URL.createObjectURL(file);
+  });
+}
+
+async function compressImage(file) {
+  const image = await fileToImage(file);
+  const maxSize = 1200;
+  const scale = Math.min(1, maxSize / Math.max(image.width, image.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(image.width * scale));
+  canvas.height = Math.max(1, Math.round(image.height * scale));
+  const context = canvas.getContext("2d");
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  URL.revokeObjectURL(image.src);
+  return canvas.toDataURL("image/jpeg", 0.82);
 }
 
 function setSession(session) {
@@ -359,11 +383,18 @@ function resetVenueForm() {
   els.venueNameInput.value = "";
   els.venueAddressInput.value = "";
   els.venueImageInput.value = "";
+  els.venuePhotoInput.value = "";
+  els.venueImagePreview.src = "";
+  els.venueImagePreview.classList.add("hidden");
   els.saveVenueButton.textContent = "Сохранить";
 }
 
 async function saveVenue(event) {
   event.preventDefault();
+  if (!els.venueImageInput.value) {
+    alert("Добавь фото заведения");
+    return;
+  }
   const venue = {
     id: els.venueIdInput.value,
     name: els.venueNameInput.value,
@@ -406,9 +437,36 @@ function onVenueListClick(event) {
     els.venueNameInput.value = venue.name;
     els.venueAddressInput.value = venue.address || venue.area;
     els.venueImageInput.value = venue.image;
+    els.venueImagePreview.src = venue.image;
+    els.venueImagePreview.classList.remove("hidden");
+    els.venuePhotoInput.value = "";
     els.saveVenueButton.textContent = "Обновить";
   }
   if (deleteId) deleteVenue(deleteId);
+}
+
+async function onPhotoSelected() {
+  const file = els.venuePhotoInput.files?.[0];
+  if (!file) return;
+  if (!file.type.startsWith("image/")) {
+    alert("Выбери изображение");
+    els.venuePhotoInput.value = "";
+    return;
+  }
+  try {
+    els.saveVenueButton.disabled = true;
+    els.saveVenueButton.textContent = "Готовлю фото...";
+    const dataUrl = await compressImage(file);
+    els.venueImageInput.value = dataUrl;
+    els.venueImagePreview.src = dataUrl;
+    els.venueImagePreview.classList.remove("hidden");
+  } catch {
+    alert("Не получилось подготовить фото");
+    els.venuePhotoInput.value = "";
+  } finally {
+    els.saveVenueButton.disabled = false;
+    els.saveVenueButton.textContent = els.venueIdInput.value ? "Обновить" : "Сохранить";
+  }
 }
 
 els.joinButton.addEventListener("click", joinLunch);
@@ -426,6 +484,7 @@ els.adminToggle.addEventListener("click", () => {
   render();
 });
 els.venueForm.addEventListener("submit", saveVenue);
+els.venuePhotoInput.addEventListener("change", onPhotoSelected);
 els.resetFormButton.addEventListener("click", resetVenueForm);
 els.venueList.addEventListener("click", onVenueListClick);
 

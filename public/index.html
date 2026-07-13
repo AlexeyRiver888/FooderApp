@@ -78,9 +78,12 @@
             <input id="venueAddressInput" required placeholder="Улица, дом" />
           </label>
           <label>
-            URL картинки
-            <input id="venueImageInput" required placeholder="https://..." />
+            Фото
+            <input id="venuePhotoInput" type="file" accept="image/*" />
           </label>
+          <input id="venueImageInput" type="hidden" />
+          <img class="image-preview hidden" id="venueImagePreview" alt="" />
+          <p class="hint">Фото будет автоматически ужато перед сохранением.</p>
           <button class="primary-button" id="saveVenueButton" type="submit">Сохранить</button>
         </form>
         <div class="venue-list" id="venueList"></div>
