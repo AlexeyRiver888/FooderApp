@@ -242,7 +242,10 @@ function renderReady() {
 function renderFinished(session) {
   if (session.winner) {
     els.stageTitle.textContent = "Идем сюда";
-    els.stageHint.textContent = "Победитель уже отправлен участникам сообщением от бота.";
+    els.stageHint.textContent =
+      session.winnerReason === "random"
+        ? "Была ничья или все варианты попали под ветто, поэтому приложение выбрало случайно."
+        : "Победитель уже отправлен участникам сообщением от бота.";
     els.winnerPanel.innerHTML = `
       <img src="${escapeHtml(session.winner.image)}" alt="" />
       <div>
@@ -252,8 +255,8 @@ function renderFinished(session) {
     `;
   } else {
     els.stageTitle.textContent = "Победитель не определился";
-    els.stageHint.textContent = "Похоже, получилась ничья или все варианты заблокированы ветто.";
-    els.winnerPanel.innerHTML = "<strong>Нужен ручной выбор</strong>";
+    els.stageHint.textContent = "Нет заведений для выбора.";
+    els.winnerPanel.innerHTML = "<strong>Добавь заведения и сбрось сессию</strong>";
   }
   els.winnerPanel.classList.remove("hidden");
 }

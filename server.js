@@ -112,8 +112,13 @@ async function sendBotMessage(chatId, text) {
 async function notifyLunchResult(users, winner) {
   const text = winner
     ? `Готово, идем сюда:\n${winner.name}\n${winner.address || winner.area}`
-    : "Готово, но победитель не определился: ничья или все варианты заблокированы ветто.";
+    : "Готово, но сегодня нет заведений для выбора.";
   await Promise.all(users.map(user => sendBotMessage(user.id, text)));
+}
+
+function pickRandomVenue(venues) {
+  if (!venues.length) return null;
+  return venues[Math.floor(Math.random() * venues.length)];
 }
 
 async function ensureFileDb() {
@@ -196,7 +201,9 @@ async function createPostgresStore() {
         created_at timestamptz not null default now()
         ,
         revealed_at timestamptz,
-        result_notified_at timestamptz
+        result_notified_at timestamptz,
+        winner_venue_id text,
+        winner_reason text
       );
 
       create table if not exists session_active_users (
@@ -219,6 +226,8 @@ async function createPostgresStore() {
       alter table sessions add column if not exists status text not null default 'joining';
       alter table sessions add column if not exists revealed_at timestamptz;
       alter table sessions add column if not exists result_notified_at timestamptz;
+      alter table sessions add column if not exists winner_venue_id text;
+      alter table sessions add column if not exists winner_reason text;
     `);
 
     const seed = cloneDefaultDb();
@@ -248,7 +257,7 @@ async function createPostgresStore() {
       "select id, name, coalesce(nullif(address, ''), area) as address, image from venues order by sort_order, name"
     );
     const sessionsResult = await client.query(
-      "select date, status, created_at, revealed_at, result_notified_at from sessions"
+      "select date, status, created_at, revealed_at, result_notified_at, winner_venue_id, winner_reason from sessions"
     );
     const activeResult = await client.query("select session_date, user_id from session_active_users");
     const votesResult = await client.query("select session_date, venue_id, user_id, value, voted_at from votes");
@@ -297,7 +306,9 @@ async function createPostgresStore() {
         votes: {},
         createdAt: row.created_at?.toISOString?.() || row.created_at,
         revealedAt: row.revealed_at?.toISOString?.() || row.revealed_at || null,
-        resultNotifiedAt: row.result_notified_at?.toISOString?.() || row.result_notified_at || null
+        resultNotifiedAt: row.result_notified_at?.toISOString?.() || row.result_notified_at || null,
+        winnerVenueId: row.winner_venue_id || null,
+        winnerReason: row.winner_reason || null
       };
     }
 
@@ -309,7 +320,9 @@ async function createPostgresStore() {
         votes: {},
         createdAt: new Date().toISOString(),
         revealedAt: null,
-        resultNotifiedAt: null
+        resultNotifiedAt: null,
+        winnerVenueId: null,
+        winnerReason: null
       };
       db.sessions[row.session_date].activeUsers.push(row.user_id);
     }
@@ -322,7 +335,9 @@ async function createPostgresStore() {
         votes: {},
         createdAt: new Date().toISOString(),
         revealedAt: null,
-        resultNotifiedAt: null
+        resultNotifiedAt: null,
+        winnerVenueId: null,
+        winnerReason: null
       };
       db.sessions[row.session_date].votes[row.venue_id] ||= {};
       db.sessions[row.session_date].votes[row.venue_id][row.user_id] = {
@@ -399,18 +414,22 @@ async function createPostgresStore() {
 
     for (const session of Object.values(db.sessions)) {
       await client.query(
-        `insert into sessions (date, status, created_at, revealed_at, result_notified_at)
-         values ($1, $2, coalesce($3::timestamptz, now()), $4::timestamptz, $5::timestamptz)
+        `insert into sessions (date, status, created_at, revealed_at, result_notified_at, winner_venue_id, winner_reason)
+         values ($1, $2, coalesce($3::timestamptz, now()), $4::timestamptz, $5::timestamptz, $6, $7)
          on conflict (date) do update set
            status = excluded.status,
            revealed_at = excluded.revealed_at,
-           result_notified_at = excluded.result_notified_at`,
+           result_notified_at = excluded.result_notified_at,
+           winner_venue_id = excluded.winner_venue_id,
+           winner_reason = excluded.winner_reason`,
         [
           session.date,
           session.status || "joining",
           session.createdAt || null,
           session.revealedAt || null,
-          session.resultNotifiedAt || null
+          session.resultNotifiedAt || null,
+          session.winnerVenueId || null,
+          session.winnerReason || null
         ]
       );
 
@@ -566,7 +585,14 @@ async function handleApi(req, res, pathname) {
         session.revealedAt = new Date().toISOString();
       }
       const score = scoreSession(session, db.venues);
-      const winner = score.winnerVenueId ? db.venues.find(venue => venue.id === score.winnerVenueId) || null : null;
+      let winner = session.winnerVenueId ? db.venues.find(venue => venue.id === session.winnerVenueId) || null : null;
+      if (!winner) {
+        winner = score.winnerVenueId
+          ? db.venues.find(venue => venue.id === score.winnerVenueId) || null
+          : pickRandomVenue(db.venues);
+        session.winnerVenueId = winner?.id || null;
+        session.winnerReason = score.winnerVenueId ? "score" : "random";
+      }
       const participants = session.activeUsers.map(id => db.users[id]).filter(Boolean);
       const shouldNotify = !session.resultNotifiedAt;
       if (shouldNotify) session.resultNotifiedAt = new Date().toISOString();
@@ -686,6 +712,8 @@ async function handleApi(req, res, pathname) {
       session.votes = {};
       session.revealedAt = null;
       session.resultNotifiedAt = null;
+      session.winnerVenueId = null;
+      session.winnerReason = null;
       return { session: sessionPayload(db, admin.id) };
     });
     return sendJson(res, 200, result);
