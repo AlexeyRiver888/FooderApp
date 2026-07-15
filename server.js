@@ -194,6 +194,19 @@ async function notifyLunchResult(users, winner) {
 
 function refreshTodaySession(db) {
   const session = getOrCreateSession(db, todayKey());
+  const scheduledStatus = scheduledStatusForNow();
+  if (
+    scheduledStatus !== "fallback" &&
+    session.status === "finished" &&
+    !session.activeUsers.length &&
+    !Object.keys(session.votes || {}).length
+  ) {
+    session.status = "waiting";
+    session.revealedAt = null;
+    session.resultNotifiedAt = null;
+    session.winnerVenueId = null;
+    session.winnerReason = null;
+  }
   const previousStatus = session.status;
   applyScheduleToSession(session, db.venues);
   return { session, previousStatus };
@@ -985,6 +998,7 @@ async function handleApi(req, res, pathname) {
       session.winnerReason = null;
       session.lunchPromptNotifiedAt = null;
       session.votingNotifiedAt = null;
+      applyScheduleToSession(session, db.venues);
       return { session: sessionPayload(db, admin.id) };
     });
     return sendJson(res, 200, result);
