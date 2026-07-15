@@ -238,45 +238,51 @@ function statusLabel(status) {
 
 function renderWaiting(session) {
   els.stageTitle.textContent = `Обедаем ${sessionDateText(session.date)}?`;
-  els.stageHint.textContent = "Сбор участников откроется в 11:00 по Екатеринбургу.";
+  els.stageHint.textContent = "Сбор участников откроется в 10:00 по Екатеринбургу.";
 }
 
 function renderJoining(session) {
   els.stageTitle.textContent = `Обедаем ${sessionDateText(session.date)}?`;
   if (!session.isActive) {
-    els.stageHint.textContent = "Сбор открыт до 11:20 по Екатеринбургу. Нажми «Погнали», чтобы попасть в список участников.";
+    els.stageHint.textContent = "Сбор открыт до 11:00 по Екатеринбургу. Нажми «Погнали», чтобы попасть в список участников.";
     els.joinButton.classList.remove("hidden");
     return;
   }
 
-  els.stageHint.textContent = `Ты в списке. Ждем 11:20, потом голосование начнется автоматически. Сейчас ${session.activeUsers.length} чел.`;
+  els.stageHint.textContent = `Ты в списке. Ждем 11:00, потом голосование начнется автоматически. Сейчас ${session.activeUsers.length} чел.`;
 }
 
 function renderVoting(session, canVoteNow) {
   if (canVoteNow && state.currentIndex >= 0) {
     els.stageTitle.textContent = "Выбирай свайпами";
-    els.stageHint.textContent = "Вправо — да, влево — нет, вверх — ветто.";
+    els.stageHint.textContent = "Голосование открыто до 11:40. Вправо - да, влево - нет, вверх - ветто.";
     renderVenue(session.venues[state.currentIndex]);
     els.deck.classList.remove("hidden");
     els.actions.classList.remove("hidden");
     return;
   }
 
+  if (!session.isActive) {
+    els.stageTitle.textContent = "Голосование уже идет";
+    els.stageHint.textContent = "Сейчас голосуют те, кто успел нажать «Погнали». Результат увидят все.";
+    return;
+  }
+
   els.stageTitle.textContent = "Твой голос принят";
-  els.stageHint.textContent = `Ждем остальных: ${session.progress.done} из ${session.progress.total} голосов.`;
+  els.stageHint.textContent = `Ждем остальных до 11:40: ${session.progress.done} из ${session.progress.total} голосов.`;
 }
 
 function renderClosed(session) {
-  els.stageTitle.textContent = "Сбор закрыт";
+  els.stageTitle.textContent = "Ждем результат";
   els.stageHint.textContent =
-    session.activeUsers.length < 3
-      ? `Сегодня не набралось 3 человека. Успели записаться: ${session.activeUsers.length}.`
-      : "Сбор закрыт, но голосование не началось. Проверь, добавлены ли заведения.";
+    session.activeUsers.length < 2
+      ? `Записались ${session.activeUsers.length} чел. В 12:00 приложение само выберет место.`
+      : "Голосование закрыто. В 12:00 приложение покажет победителя всем.";
 }
 
 function renderReady() {
-  els.stageTitle.textContent = "Все проголосовали";
-  els.stageHint.textContent = "Интрига выдержана. Можно открыть результат.";
+  els.stageTitle.textContent = "Результат почти готов";
+  els.stageHint.textContent = "Сейчас приложение фиксирует победителя.";
   els.revealButton.classList.remove("hidden");
 }
 
@@ -286,7 +292,7 @@ function renderFinished(session) {
     els.stageHint.textContent =
       session.winnerReason === "random"
         ? "Была ничья или все варианты попали под ветто, поэтому приложение выбрало случайно."
-        : "Победитель уже отправлен участникам сообщением от бота.";
+        : "Победитель уже отправлен всем сообщением от бота.";
     els.winnerPanel.innerHTML = `
       <img src="${escapeHtml(session.winner.image)}" alt="" />
       <div>

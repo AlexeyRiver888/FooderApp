@@ -8,8 +8,10 @@ import {
   cloneDefaultDb,
   getOrCreateSession,
   isAdminUser,
+  MIN_PARTICIPANTS,
   normalizeVenue,
   publicUser,
+  scheduledStatusForNow,
   scoreSession,
   sessionPayload,
   todayKey,
@@ -160,42 +162,109 @@ function refreshTodaySession(db) {
   return { session, previousStatus };
 }
 
-async function runScheduledNotifications() {
-  if (!store) return;
-  const notifications = await store.withDb(async db => {
-    const { session, previousStatus } = refreshTodaySession(db);
-    const messages = [];
-    const allUsers = Object.values(db.users);
+function pickRandomVenue(venues) {
+  if (!venues.length) return null;
+  return venues[Math.floor(Math.random() * venues.length)];
+}
 
-    if (session.status === "joining" && !session.lunchPromptNotifiedAt) {
-      session.lunchPromptNotifiedAt = new Date().toISOString();
+function finishSession(db, session, forceRandom = false) {
+  if (session.status === "finished") {
+    return session.winnerVenueId ? db.venues.find(venue => venue.id === session.winnerVenueId) || null : null;
+  }
+
+  const score = scoreSession(session, db.venues);
+  const scoredWinner = score.winnerVenueId
+    ? db.venues.find(venue => venue.id === score.winnerVenueId) || null
+    : null;
+  const winner = forceRandom ? pickRandomVenue(db.venues) : scoredWinner || pickRandomVenue(db.venues);
+
+  session.status = "finished";
+  session.revealedAt = new Date().toISOString();
+  session.winnerVenueId = winner?.id || null;
+  session.winnerReason = !forceRandom && scoredWinner ? "score" : "random";
+
+  return winner;
+}
+
+function resultNotification(db, winner) {
+  return {
+    users: Object.values(db.users),
+    winner
+  };
+}
+
+function collectScheduledNotifications(db) {
+  const { session, previousStatus } = refreshTodaySession(db);
+  const messages = [];
+  const allUsers = Object.values(db.users);
+  const scheduleStatus = scheduledStatusForNow();
+
+  if (session.status === "joining" && !session.lunchPromptNotifiedAt) {
+    session.lunchPromptNotifiedAt = new Date().toISOString();
+    messages.push({
+      type: "webapp",
+      users: allUsers,
+      text: `Идешь на обед ${session.date}?`,
+      button: "Погнали"
+    });
+  }
+
+  if (previousStatus !== "voting" && session.status === "voting" && !session.votingNotifiedAt) {
+    session.votingNotifiedAt = new Date().toISOString();
+    messages.push({
+      type: "webapp",
+      users: session.activeUsers.map(id => db.users[id]).filter(Boolean),
+      text: "Голосование началось!",
+      button: "Погнали"
+    });
+  }
+
+  if (session.status === "ready" && db.venues.length) {
+    const winner = finishSession(db, session, false);
+    const shouldNotify = !session.resultNotifiedAt;
+    if (shouldNotify) {
+      session.resultNotifiedAt = new Date().toISOString();
       messages.push({
-        users: allUsers,
-        text: `Идешь на обед ${session.date}?`,
-        button: "Погнали"
+        type: "result",
+        ...resultNotification(db, winner)
       });
     }
+  }
 
-    if (previousStatus !== "voting" && session.status === "voting" && !session.votingNotifiedAt) {
-      session.votingNotifiedAt = new Date().toISOString();
-      messages.push({
-        users: session.activeUsers.map(id => db.users[id]).filter(Boolean),
-        text: "Голосование началось!",
-        button: "Участвую"
-      });
-    }
+  if (scheduleStatus === "fallback" && session.status !== "finished" && db.venues.length && !session.resultNotifiedAt) {
+    const winner = finishSession(db, session, true);
+    session.resultNotifiedAt = new Date().toISOString();
+    messages.push({
+      type: "result",
+      ...resultNotification(db, winner)
+    });
+  }
 
-    return messages;
-  });
+  return messages;
+}
 
+async function deliverNotifications(notifications) {
   for (const message of notifications) {
+    if (message.type === "result") {
+      await notifyLunchResult(message.users, message.winner);
+      continue;
+    }
     await Promise.all(message.users.map(user => sendBotWebAppMessage(user.id, message.text, message.button)));
   }
 }
 
-function pickRandomVenue(venues) {
-  if (!venues.length) return null;
-  return venues[Math.floor(Math.random() * venues.length)];
+function deliverNotificationsInBackground(notifications) {
+  deliverNotifications(notifications).catch(error => console.error("Notification delivery error", error));
+}
+
+function notifyLunchResultInBackground(users, winner) {
+  notifyLunchResult(users, winner).catch(error => console.error("Result notification error", error));
+}
+
+async function runScheduledNotifications() {
+  if (!store) return;
+  const notifications = await store.withDb(async db => collectScheduledNotifications(db));
+  await deliverNotifications(notifications);
 }
 
 async function ensureFileDb() {
@@ -614,12 +683,13 @@ async function handleApi(req, res, pathname) {
         if (!alreadyUsed) invite.usedBy.push(userId);
       }
       db.users[userId] = savedUser;
-      refreshTodaySession(db);
-      return { ok: true, user: savedUser, session: sessionPayload(db, userId) };
+      const notifications = collectScheduledNotifications(db);
+      return { ok: true, user: savedUser, session: sessionPayload(db, userId), notifications };
     });
 
     if (result.ok === false) return sendError(res, result.status, result.message);
-    return sendJson(res, 200, result);
+    deliverNotificationsInBackground(result.notifications || []);
+    return sendJson(res, 200, { ok: true, user: result.user, session: result.session });
   }
 
   const user = await requireAuth(req, res);
@@ -627,10 +697,11 @@ async function handleApi(req, res, pathname) {
 
   if (pathname === "/api/session" && req.method === "GET") {
     const result = await store.withDb(async db => {
-      refreshTodaySession(db);
-      return { user, session: sessionPayload(db, user.id) };
+      const notifications = collectScheduledNotifications(db);
+      return { user, session: sessionPayload(db, user.id), notifications };
     });
-    return sendJson(res, 200, result);
+    deliverNotificationsInBackground(result.notifications || []);
+    return sendJson(res, 200, { user: result.user, session: result.session });
   }
 
   if ((pathname === "/api/session/join" || pathname === "/api/session/activate") && req.method === "POST") {
@@ -655,14 +726,14 @@ async function handleApi(req, res, pathname) {
       if (!session.activeUsers.includes(user.id)) {
         return { ok: false, status: 409, message: "Join today's lunch first" };
       }
-      if (session.activeUsers.length < 3) {
-        return { ok: false, status: 409, message: "At least 3 people are needed" };
+      if (session.activeUsers.length < MIN_PARTICIPANTS) {
+        return { ok: false, status: 409, message: `At least ${MIN_PARTICIPANTS} people are needed` };
       }
       if (!db.venues.length) {
         return { ok: false, status: 409, message: "Add venues before voting" };
       }
       if (session.status !== "voting") {
-        return { ok: false, status: 409, message: "Голосование начнется в 11:20 по Екатеринбургу" };
+        return { ok: false, status: 409, message: "Голосование начнется в 11:00 по Екатеринбургу" };
       }
       return { ok: true, session: sessionPayload(db, user.id) };
     });
@@ -680,30 +751,17 @@ async function handleApi(req, res, pathname) {
       if (session.status !== "ready" && session.status !== "finished") {
         return { ok: false, status: 409, message: "The result is not ready yet" };
       }
-      if (session.status === "ready") {
-        session.status = "finished";
-        session.revealedAt = new Date().toISOString();
-      }
-      const score = scoreSession(session, db.venues);
-      let winner = session.winnerVenueId ? db.venues.find(venue => venue.id === session.winnerVenueId) || null : null;
-      if (!winner) {
-        winner = score.winnerVenueId
-          ? db.venues.find(venue => venue.id === score.winnerVenueId) || null
-          : pickRandomVenue(db.venues);
-        session.winnerVenueId = winner?.id || null;
-        session.winnerReason = score.winnerVenueId ? "score" : "random";
-      }
-      const participants = session.activeUsers.map(id => db.users[id]).filter(Boolean);
+      const winner = finishSession(db, session, false);
       const shouldNotify = !session.resultNotifiedAt;
       if (shouldNotify) session.resultNotifiedAt = new Date().toISOString();
       return {
         ok: true,
         session: sessionPayload(db, user.id),
-        notification: shouldNotify ? { users: participants, winner } : null
+        notification: shouldNotify ? resultNotification(db, winner) : null
       };
     });
     if (result.ok === false) return sendError(res, result.status, result.message);
-    if (result.notification) await notifyLunchResult(result.notification.users, result.notification.winner);
+    if (result.notification) notifyLunchResultInBackground(result.notification.users, result.notification.winner);
     return sendJson(res, 200, { session: result.session });
   }
 
@@ -731,13 +789,21 @@ async function handleApi(req, res, pathname) {
       };
 
       if (allParticipantsVoted(session, db.venues)) {
-        session.status = "ready";
+        const winner = finishSession(db, session, false);
+        const shouldNotify = !session.resultNotifiedAt;
+        if (shouldNotify) session.resultNotifiedAt = new Date().toISOString();
+        return {
+          ok: true,
+          session: sessionPayload(db, user.id),
+          notification: shouldNotify ? resultNotification(db, winner) : null
+        };
       }
 
       return { ok: true, session: sessionPayload(db, user.id) };
     });
 
     if (result.ok === false) return sendError(res, result.status, result.message);
+    if (result.notification) notifyLunchResultInBackground(result.notification.users, result.notification.winner);
     return sendJson(res, 200, result);
   }
 
