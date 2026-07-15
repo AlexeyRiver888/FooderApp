@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
+import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
   allParticipantsVoted,
@@ -43,6 +44,9 @@ const PORT = Number(process.env.PORT || 3000);
 const DATABASE_URL = process.env.DATABASE_URL || "";
 const BOT_TOKEN = process.env.BOT_TOKEN || "";
 const APP_URL = process.env.APP_URL || "";
+const TELEGRAM_WEBHOOK_SECRET =
+  process.env.TELEGRAM_WEBHOOK_SECRET ||
+  (BOT_TOKEN ? crypto.createHash("sha256").update(BOT_TOKEN).digest("hex").slice(0, 32) : "");
 const DATA_DIR = path.join(__dirname, "data");
 const PUBLIC_DIR = path.join(__dirname, "public");
 const DB_FILE = path.join(DATA_DIR, "db.json");
@@ -146,6 +150,39 @@ async function sendBotWebAppMessage(chatId, text, buttonText) {
   } catch (error) {
     console.error("Telegram web_app sendMessage error", error);
   }
+}
+
+function telegramUserFromMessage(message) {
+  return message?.from?.id
+    ? {
+        id: String(message.from.id),
+        firstName: message.from.first_name || "",
+        lastName: message.from.last_name || "",
+        username: message.from.username || ""
+      }
+    : null;
+}
+
+function broadcastTextFromCommand(text) {
+  const trimmed = String(text || "").trim();
+  const match = trimmed.match(/^\/(?:broadcast|send)(?:@\w+)?\s+([\s\S]+)$/i);
+  return match?.[1]?.trim() || "";
+}
+
+async function broadcastBotMessage(text) {
+  const db = await store.readDb();
+  const users = Object.values(db.users);
+  await Promise.all(users.map(user => sendBotMessage(user.id, text)));
+  return users.length;
+}
+
+function broadcastBotMessageInBackground(adminChatId, text) {
+  broadcastBotMessage(text)
+    .then(count => sendBotMessage(adminChatId, `Рассылка отправлена: ${count} получателей.`))
+    .catch(error => {
+      console.error("Broadcast error", error);
+      return sendBotMessage(adminChatId, "Не получилось отправить рассылку. Проверь логи Railway.");
+    });
 }
 
 async function notifyLunchResult(users, winner) {
@@ -265,6 +302,27 @@ async function runScheduledNotifications() {
   if (!store) return;
   const notifications = await store.withDb(async db => collectScheduledNotifications(db));
   await deliverNotifications(notifications);
+}
+
+async function configureTelegramWebhook() {
+  if (!BOT_TOKEN || !APP_URL || !TELEGRAM_WEBHOOK_SECRET) return;
+  const webhookUrl = `${APP_URL.replace(/\/+$/, "")}/api/telegram/webhook`;
+  try {
+    const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/setWebhook`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        url: webhookUrl,
+        secret_token: TELEGRAM_WEBHOOK_SECRET,
+        allowed_updates: ["message"]
+      })
+    });
+    if (!response.ok) {
+      console.error("Telegram setWebhook failed", response.status, await response.text());
+    }
+  } catch (error) {
+    console.error("Telegram setWebhook error", error);
+  }
 }
 
 async function ensureFileDb() {
@@ -665,6 +723,47 @@ async function requireAdmin(req, res) {
 }
 
 async function handleApi(req, res, pathname) {
+  if (pathname === "/api/telegram/webhook" && req.method === "POST") {
+    if (TELEGRAM_WEBHOOK_SECRET) {
+      const secret = req.headers["x-telegram-bot-api-secret-token"];
+      if (secret !== TELEGRAM_WEBHOOK_SECRET) return sendError(res, 403, "Forbidden");
+    }
+
+    const update = await parseJsonBody(req);
+    const message = update.message;
+    const sender = telegramUserFromMessage(message);
+    const chatId = message?.chat?.id;
+    const text = message?.text || "";
+
+    if (!sender || !chatId || !text) return sendJson(res, 200, { ok: true });
+
+    if (text.startsWith("/help") || text.startsWith("/start")) {
+      const helpText = isAdminUser(sender.id)
+        ? "Команда для рассылки:\n/broadcast текст сообщения"
+        : "Открой mini-app через кнопку бота, чтобы участвовать в выборе обеда.";
+      sendBotMessage(chatId, helpText).catch(error => console.error("Bot help error", error));
+      return sendJson(res, 200, { ok: true });
+    }
+
+    const broadcastText = broadcastTextFromCommand(text);
+    if (broadcastText) {
+      if (!isAdminUser(sender.id)) {
+        sendBotMessage(chatId, "Эта команда доступна только админу.").catch(error =>
+          console.error("Bot access reply error", error)
+        );
+        return sendJson(res, 200, { ok: true });
+      }
+
+      sendBotMessage(chatId, "Принял, отправляю рассылку.").catch(error =>
+        console.error("Bot broadcast ack error", error)
+      );
+      broadcastBotMessageInBackground(chatId, broadcastText);
+      return sendJson(res, 200, { ok: true });
+    }
+
+    return sendJson(res, 200, { ok: true });
+  }
+
   if (pathname === "/api/login" && req.method === "POST") {
     const body = await parseJsonBody(req);
     const user = validateTelegramInitData(body.initData || "");
@@ -921,6 +1020,7 @@ async function serveStatic(req, res, pathname) {
 
 store = DATABASE_URL ? await createPostgresStore() : createFileStore();
 await store.init();
+await configureTelegramWebhook();
 await runScheduledNotifications();
 setInterval(() => {
   runScheduledNotifications().catch(error => console.error("Scheduled notification error", error));
